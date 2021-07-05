@@ -13,10 +13,8 @@
 # limitations under the License.
 
 import torch
-
 from nemo.core.classes import NeuralModule, typecheck
 from nemo.core.neural_types import LengthsType, LogprobsType, NeuralType, PredictionsType
-
 
 class BeamSearchDecoderWithLM(NeuralModule):
     """Neural Module that does CTC beam search with a N-gram language model.
@@ -57,34 +55,33 @@ class BeamSearchDecoderWithLM(NeuralModule):
         return {"predictions": NeuralType(('B', 'T'), PredictionsType())}
 
     def __init__(
-        self, vocab, beam_width, alpha, beta, lm_path, num_cpus, cutoff_prob=1.0, cutoff_top_n=40, input_tensor=False
+        self, beam_width, alpha, beta, lm_path, alphabet_path, cutoff_prob=1.0, cutoff_top_n=40, input_tensor=False
     ):
-
         try:
-            from ctc_decoders import Scorer, ctc_beam_search_decoder_batch
+            from ds_ctcdecoder import Scorer, Alphabet, ctc_beam_search_decoder
         except ModuleNotFoundError:
             raise ModuleNotFoundError(
-                "BeamSearchDecoderWithLM requires the installation of ctc_decoders "
-                "from scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh"
+                "BeamSearchDecoderWithLM requires the "
+                "installation of ctc_decoders "
+                "from scripts/install_ctc_decoders.sh"
             )
-
         super().__init__()
-
+        if alphabet_path is not None:
+            self.alphabet = Alphabet(alphabet_path)
+        else:
+            self.alphabet = None
         if lm_path is not None:
-            self.scorer = Scorer(alpha, beta, model_path=lm_path, vocabulary=vocab)
+            self.scorer = Scorer(alpha, beta, scorer_path=lm_path, alphabet=self.alphabet)
         else:
             self.scorer = None
-        self.beam_search_func = ctc_beam_search_decoder_batch
-        self.vocab = vocab
+        self.beam_search_func = ctc_beam_search_decoder
         self.beam_width = beam_width
-        self.num_cpus = num_cpus
         self.cutoff_prob = cutoff_prob
         self.cutoff_top_n = cutoff_top_n
         self.input_tensor = input_tensor
 
-    @typecheck(ignore_collections=True)
     @torch.no_grad()
-    def forward(self, log_probs, log_probs_length):
+    def forward(self, log_probs, log_probs_length, hot_words):
         probs_list = log_probs
         if self.input_tensor:
             probs = torch.exp(log_probs)
@@ -93,11 +90,11 @@ class BeamSearchDecoderWithLM(NeuralModule):
                 probs_list.append(prob[: log_probs_length[i], :])
         res = self.beam_search_func(
             probs_list,
-            self.vocab,
+            self.alphabet,
             beam_size=self.beam_width,
-            num_processes=self.num_cpus,
-            ext_scoring_func=self.scorer,
             cutoff_prob=self.cutoff_prob,
             cutoff_top_n=self.cutoff_top_n,
+            scorer=self.scorer,
+            hot_words=hot_words
         )
         return res
