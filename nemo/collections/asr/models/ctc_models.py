@@ -280,6 +280,43 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                 self.decoder.unfreeze()
             logging.set_verbosity(logging_level)
         return hypotheses
+    
+    @torch.no_grad()
+    def transcribe_online(self, input_signal=None, input_signal_length=None, logprobs=False, return_hypotheses=False):
+        hypotheses = []
+        mode = self.training
+        device = next(self.parameters()).device
+        dither_value = self.preprocessor.featurizer.dither
+        pad_to_value = self.preprocessor.featurizer.pad_to
+        try:
+            self.preprocessor.featurizer.dither = 0.0
+            self.preprocessor.featurizer.pad_to = 0
+                # Switch model to evaluation mode
+            self.eval()
+            logging_level = logging.get_verbosity()
+            logging.set_verbosity(logging.WARNING)
+            logits, logits_len, greedy_predictions = self.forward(input_signal=torch.from_numpy(input_signal).to(device), input_signal_length=torch.from_numpy(input_signal_length).to(device))
+            if logprobs:
+                for idx in range(logits.shape[0]):
+                    hypotheses.append(logits[idx][: logits_len[idx]])
+            else:
+                current_hypotheses = self._wer.ctc_decoder_predictions_tensor(
+                       greedy_predictions, predictions_len=logits_len, return_hypotheses=return_hypotheses,
+                 )
+
+                if return_hypotheses:
+                    # dump log probs per file
+                    for idx in range(logits.shape[0]):
+                        current_hypotheses[idx].y_sequence = logits[idx][: logits_len[idx]]
+
+                hypotheses += current_hypotheses
+        finally:
+            # set mode back to its original value
+            self.train(mode=mode)
+            self.preprocessor.featurizer.dither = dither_value
+            self.preprocessor.featurizer.pad_to = pad_to_value
+            logging.set_verbosity(logging_level)
+        return hypotheses
 
     def change_vocabulary(self, new_vocabulary: List[str]):
         """
